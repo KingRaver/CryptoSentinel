@@ -1,9 +1,9 @@
-# Greece Project Structure
+# CryptoSentinel AI Structure
 
 This document outlines the directory structure of the Greece project, a Python-based cryptocurrency analysis and tracking system.
 
 ```
-greece/
+cryptosentinel/
 ├── .env                        # Environment variables configuration
 ├── .gitignore                  # Git ignore rules
 ├── README.md                   # Project documentation
