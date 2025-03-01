@@ -89,7 +89,7 @@ This document provides comprehensive performance benchmarks and operational metr
 
 | Pattern Type | Detection Accuracy | Lead Time (avg) | Sample Size |
 |--------------|-------------------|-----------------|-------------|
-| Accumulation | 93.2% | 3.7 hours | A7,541 instances |
+| Accumulation | 93.2% | 3.7 hours | 7,541 instances |
 | Distribution | 91.5% | 2.9 hours | 6,938 instances |
 | Bull Trap | 88.7% | 1.8 hours | 5,217 instances |
 | Bear Trap | 87.3% | 1.7 hours | 4,983 instances |
