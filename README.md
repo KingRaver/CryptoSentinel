@@ -102,7 +102,7 @@ CryptoSentinel is designed for rapid scaling across multiple dimensions:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/cryptosentinel.git
+git clone https://github.com/kingraver/cryptosentinel.git
 cd cryptosentinel
 
 # Create virtual environment
