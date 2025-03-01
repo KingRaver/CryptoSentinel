@@ -27,7 +27,7 @@ CryptoSentinel operates on a sophisticated multi-layered architecture:
 ┌─────────────────────────────────────────────────────────────┐
 │                    DATA ACQUISITION LAYER                    │
 │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐    │
-│  │  CoinGecko API │  │  On-chain    │  │  Market       │    │
+│  │  CoinGecko API │  │  Onchain    │  │  Market       │    │
 │  │  Integration   │  │  Data Feeds  │  │  Depth Data   │    │
 │  └───────────────┘  └───────────────┘  └───────────────┘    │
 └───────────────────────────┬─────────────────────────────────┘
