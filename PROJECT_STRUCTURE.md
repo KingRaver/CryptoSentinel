@@ -1,6 +1,6 @@
 # CryptoSentinel Structure
 
-This document outlines the directory structure of the Greece project, a Python-based cryptocurrency analysis and tracking system.
+This document outlines the directory structure of the CryptoSentinel project, a Python-based cryptocurrency analysis and tracking system.
 
 ```
 cryptosentinel/
