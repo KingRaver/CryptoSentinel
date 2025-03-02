@@ -1,263 +1,456 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from dataclasses import dataclass
-from typing import Dict, List, TypedDict, Optional
-import os
-from dotenv import load_dotenv
+import time
+import requests
+from typing import Dict, List, Optional, Any, Union, Set
+from datetime import datetime, timedelta
+import json
 from utils.logger import logger
-from database import CryptoDatabase
 
-class CryptoInfo(TypedDict):
-    id: str
-    symbol: str
-    name: str
-
-class MarketAnalysisConfig(TypedDict):
-    correlation_sensitivity: float
-    volatility_threshold: float
-    volume_significance: int
-    historical_periods: List[int]
-
-class TweetConstraints(TypedDict):
-    MIN_LENGTH: int
-    MAX_LENGTH: int
-    HARD_STOP_LENGTH: int
-
-class CoinGeckoParams(TypedDict):
-    vs_currency: str
-    ids: str
-    order: str
-    per_page: int
-    page: int
-    sparkline: bool
-    price_change_percentage: str
-
-@dataclass
-class Config:
-    def __init__(self) -> None:
-        # Get the absolute path to the .env file
-        env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env')
-        logger.logger.info(f"Loading .env from: {env_path}")
-
-        # Load environment variables
-        load_dotenv(env_path)
-        logger.logger.info("Environment variables loaded")
+class CoinGeckoHandler:
+    """
+    Enhanced CoinGecko API handler with caching, rate limiting, and fallback strategies
+    Optimized for handling multiple tokens
+    """
+    def __init__(self, base_url: str, cache_duration: int = 60) -> None:
+        """
+        Initialize the CoinGecko handler
         
-        # Debug loaded variables
-        logger.logger.info(f"CHROME_DRIVER_PATH: {os.getenv('CHROME_DRIVER_PATH')}")
-        logger.logger.info(f"CLAUDE_API_KEY Present: {bool(os.getenv('CLAUDE_API_KEY'))}")
+        Args:
+            base_url: The base URL for the CoinGecko API
+            cache_duration: Cache duration in seconds
+        """
+        self.base_url = base_url
+        self.cache_duration = cache_duration
+        self.cache = {}
+        self.last_request_time = 0
+        self.min_request_interval = 1.5  # Minimum 1.5 seconds between requests
+        self.daily_requests = 0
+        self.daily_requests_reset = datetime.now()
+        self.failed_requests = 0
+        self.active_retries = 0
+        self.max_retries = 3
+        self.retry_delay = 5  # seconds
+        self.user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36'
+        self.token_id_cache = {}  # Cache for token ID lookups
         
-        # Initialize database
-        db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                              'data', 'crypto_history.db')
-        self.db = CryptoDatabase(db_path)
-        logger.logger.info(f"Database initialized at: {db_path}")
+        logger.logger.info("CoinGecko handler initialized")
+    
+    def _get_cache_key(self, endpoint: str, params: Dict) -> str:
+        """Generate a unique cache key for the request"""
+        param_str = json.dumps(params, sort_keys=True)
+        return f"{endpoint}:{param_str}"
+    
+    def _is_cache_valid(self, cache_key: str) -> bool:
+        """Check if cache entry is still valid"""
+        if cache_key not in self.cache:
+            return False
         
-        # Analysis Intervals and Thresholds
-        self.BASE_INTERVAL: int = 300  # 5 minutes in seconds
-        self.PRICE_CHANGE_THRESHOLD: float = 5.0  # 5% change triggers post
-        self.VOLUME_CHANGE_THRESHOLD: float = 10.0  # 10% change triggers post
-        self.VOLUME_WINDOW_MINUTES: int = 60  # Track volume over 1 hour
-        self.VOLUME_TREND_THRESHOLD: float = 15.0  # 15% change over rolling window triggers post
+        cache_entry = self.cache[cache_key]
+        cache_time = cache_entry['timestamp']
+        current_time = time.time()
         
-        # Google Sheets Configuration (maintained for compatibility)
-        self.GOOGLE_SHEETS_PROJECT_ID: str = os.getenv('GOOGLE_SHEETS_PROJECT_ID', '')
-        self.GOOGLE_SHEETS_PRIVATE_KEY: str = os.getenv('GOOGLE_SHEETS_PRIVATE_KEY', '')
-        self.GOOGLE_SHEETS_CLIENT_EMAIL: str = os.getenv('GOOGLE_SHEETS_CLIENT_EMAIL', '')
-        self.GOOGLE_SHEET_ID: str = os.getenv('GOOGLE_SHEET_ID', '')
-        self.GOOGLE_SHEETS_RANGE: str = 'Market Analysis!A:F'
-        
-        # Claude API Configuration
-        self.CLAUDE_API_KEY: str = os.getenv('CLAUDE_API_KEY', '')
-        self.CLAUDE_MODEL: str = 'claude-3-5-sonnet-20241022'  # Updated to Sonnet
-        
-        # Twitter Configuration
-        self.TWITTER_USERNAME: str = os.getenv('TWITTER_USERNAME', '')
-        self.TWITTER_PASSWORD: str = os.getenv('TWITTER_PASSWORD', '')
-        self.CHROME_DRIVER_PATH: str = os.getenv('CHROME_DRIVER_PATH', '/usr/local/bin/chromedriver')
-        
-        # Analysis Configuration
-        self.CORRELATION_INTERVAL: int = 5  # minutes (for testing)
-        self.MAX_RETRIES: int = int(os.getenv('MAX_RETRIES', '3'))
-        
-        # Market Analysis Parameters
-        self.MARKET_ANALYSIS_CONFIG: MarketAnalysisConfig = {
-            'correlation_sensitivity': 0.7,
-            'volatility_threshold': 2.0,
-            'volume_significance': 100000,
-            'historical_periods': [1, 4, 24]
+        return (current_time - cache_time) < self.cache_duration
+    
+    def _get_from_cache(self, cache_key: str) -> Any:
+        """Get data from cache if available and valid"""
+        if self._is_cache_valid(cache_key):
+            logger.logger.debug(f"Cache hit for {cache_key}")
+            return self.cache[cache_key]['data']
+        return None
+    
+    def _add_to_cache(self, cache_key: str, data: Any) -> None:
+        """Add data to cache"""
+        self.cache[cache_key] = {
+            'timestamp': time.time(),
+            'data': data
         }
-        
-        # Tweet Length Constraints
-        self.TWEET_CONSTRAINTS: TweetConstraints = {
-            'MIN_LENGTH': 220,
-            'MAX_LENGTH': 270,
-            'HARD_STOP_LENGTH': 280
-        }
-        
-        # API Endpoints
-        self.COINGECKO_BASE_URL: str = "https://api.coingecko.com/api/v3"
-        
-        # CoinGecko API Request Settings - Updated with all tracked tokens
-        self.COINGECKO_PARAMS: CoinGeckoParams = {
-            "vs_currency": "usd",
-            "ids": "kaito,bitcoin,ethereum,solana,avalanche-2,polkadot,ripple,binancecoin,uniswap,near,aave,polygon-pos,filecoin",
-            "order": "market_cap_desc",
-            "per_page": 100,  # Increased to ensure we get all tokens
-            "page": 1,
-            "sparkline": True,
-            "price_change_percentage": "1h,24h,7d"
-        }
-        
-        # Tracked Cryptocurrencies - Updated with all tokens
-        self.TRACKED_CRYPTO: Dict[str, CryptoInfo] = {
-            'bitcoin': {
-                'id': 'bitcoin',
-                'symbol': 'btc',
-                'name': 'Bitcoin'
-            },
-            'ethereum': {
-                'id': 'ethereum', 
-                'symbol': 'eth',
-                'name': 'Ethereum'
-            },
-            'kaito': {
-                'id': 'kaito',
-                'symbol': 'kaito',
-                'name': 'Kaito'
-            },
-            'solana': {
-                'id': 'solana',
-                'symbol': 'sol',
-                'name': 'Solana'
-            },
-            'avalanche-2': {
-                'id': 'avalanche-2',
-                'symbol': 'avax',
-                'name': 'Avalanche'
-            },
-            'polkadot': {
-                'id': 'polkadot',
-                'symbol': 'dot',
-                'name': 'Polkadot'
-            },
-            'ripple': {
-                'id': 'ripple',
-                'symbol': 'xrp',
-                'name': 'XRP'
-            },
-            'binancecoin': {
-                'id': 'binancecoin',
-                'symbol': 'bnb',
-                'name': 'BNB'
-            },
-            'uniswap': {
-                'id': 'uniswap',
-                'symbol': 'uni',
-                'name': 'Uniswap'
-            },
-            'near': {
-                'id': 'near',
-                'symbol': 'near',
-                'name': 'NEAR Protocol'
-            },
-            'aave': {
-                'id': 'aave',
-                'symbol': 'aave',
-                'name': 'Aave'
-            },
-            'polygon-pos': {
-                'id': 'polygon-pos',
-                'symbol': 'pol',
-                'name': 'Polygon'
-            },
-            'filecoin': {
-                'id': 'filecoin',
-                'symbol': 'fil',
-                'name': 'Filecoin'
-            }
-        }
-        
-        # Enhanced Claude Analysis Prompt Template for Sonnet - Updated to be token-agnostic
-        self.CLAUDE_ANALYSIS_PROMPT: str = """Analyze {token} Market Dynamics:
-
-Current Market Data:
-{token}:
-- Price: ${price:,.2f}
-- 24h Change: {change:.2f}%
-- Volume: ${volume:,.0f}
-
-Please provide a concise but detailed market analysis:
-1. Short-term Movement: 
-   - Price action in last few minutes
-   - Volume profile significance
-   - Immediate support/resistance levels
-
-2. Market Microstructure:
-   - Order flow analysis
-   - Volume weighted price trends
-   - Market depth indicators
-
-3. Cross-Token Dynamics:
-   - Correlation changes with other tokens
-   - Relative strength shifts
-   - Market maker activity signals
-
-Focus on actionable micro-trends and real-time market behavior. Identify minimal but significant price movements.
-Keep the analysis technical but concise, emphasizing key shifts in market dynamics."""
-        
-        # Validation
-        self._validate_config()
-
-    def _validate_config(self) -> None:
-        """Validate required configuration settings"""
-        required_settings: List[tuple[str, str]] = [
-            ('TWITTER_USERNAME', self.TWITTER_USERNAME),
-            ('TWITTER_PASSWORD', self.TWITTER_PASSWORD),
-            ('CHROME_DRIVER_PATH', self.CHROME_DRIVER_PATH),
-            ('CLAUDE_API_KEY', self.CLAUDE_API_KEY),
-            ('GOOGLE_SHEETS_PROJECT_ID', self.GOOGLE_SHEETS_PROJECT_ID),
-            ('GOOGLE_SHEETS_PRIVATE_KEY', self.GOOGLE_SHEETS_PRIVATE_KEY),
-            ('GOOGLE_SHEETS_CLIENT_EMAIL', self.GOOGLE_SHEETS_CLIENT_EMAIL),
-            ('GOOGLE_SHEET_ID', self.GOOGLE_SHEET_ID)
+        logger.logger.debug(f"Added to cache: {cache_key}")
+    
+    def _clean_cache(self) -> None:
+        """Remove expired cache entries"""
+        current_time = time.time()
+        expired_keys = [
+            key for key, entry in self.cache.items()
+            if (current_time - entry['timestamp']) >= self.cache_duration
         ]
         
-        missing_settings: List[str] = []
-        for setting_name, setting_value in required_settings:
-            if not setting_value or setting_value.strip() == '':
-                missing_settings.append(setting_name)
+        for key in expired_keys:
+            del self.cache[key]
         
-        if missing_settings:
-            error_msg = f"Missing required configuration: {', '.join(missing_settings)}"
-            logger.log_error("Config", error_msg)
-            raise ValueError(error_msg)
-
-    def get_coingecko_markets_url(self) -> str:
-        """Get CoinGecko markets API endpoint"""
-        return f"{self.COINGECKO_BASE_URL}/coins/markets"
-
-    def get_coingecko_params(self, **kwargs) -> Dict:
-        """Get CoinGecko API parameters with optional overrides"""
-        params = self.COINGECKO_PARAMS.copy()
-        params.update(kwargs)
-        return params
-
-    @property
-    def twitter_selectors(self) -> Dict[str, str]:
-        """CSS Selectors for Twitter elements"""
-        return {
-            'username_input': 'input[autocomplete="username"]',
-            'password_input': 'input[type="password"]',
-            'login_button': '[data-testid="LoginForm_Login_Button"]',
-            'tweet_input': '[data-testid="tweetTextarea_0"]',
-            'tweet_button': '[data-testid="tweetButton"]'
+        if expired_keys:
+            logger.logger.debug(f"Cleaned {len(expired_keys)} expired cache entries")
+    
+    def _enforce_rate_limit(self) -> None:
+        """Enforce rate limiting to avoid API restrictions"""
+        current_time = time.time()
+        time_since_last_request = current_time - self.last_request_time
+        
+        if time_since_last_request < self.min_request_interval:
+            sleep_time = self.min_request_interval - time_since_last_request
+            logger.logger.debug(f"Rate limiting: sleeping for {sleep_time:.2f}s")
+            time.sleep(sleep_time)
+        
+        # Reset daily request count if a day has passed
+        if (datetime.now() - self.daily_requests_reset).total_seconds() >= 86400:
+            self.daily_requests = 0
+            self.daily_requests_reset = datetime.now()
+            logger.logger.info("Daily request counter reset")
+    
+    def _make_request(self, endpoint: str, params: Dict = None) -> Optional[Any]:
+        """Make a request to the CoinGecko API with retries and error handling"""
+        if params is None:
+            params = {}
+        
+        url = f"{self.base_url}/{endpoint}"
+        self._enforce_rate_limit()
+        
+        self.last_request_time = time.time()
+        self.daily_requests += 1
+        
+        try:
+            headers = {
+                'User-Agent': self.user_agent,
+                'Accept': 'application/json'
+            }
+            
+            logger.logger.debug(f"Making API request to {endpoint} with params {params}")
+            response = requests.get(url, params=params, headers=headers, timeout=30)
+            
+            if response.status_code == 200:
+                logger.logger.debug(f"API request successful: {endpoint}")
+                return response.json()
+            elif response.status_code == 429:
+                self.failed_requests += 1
+                logger.logger.warning(f"API rate limit exceeded: {response.status_code}")
+                time.sleep(self.retry_delay * 2)  # Longer delay for rate limits
+                return None
+            else:
+                self.failed_requests += 1
+                logger.logger.error(f"API request failed: {response.status_code} - {response.text}")
+                return None
+                
+        except requests.exceptions.RequestException as e:
+            self.failed_requests += 1
+            logger.logger.error(f"Request exception: {str(e)}")
+            return None
+        except Exception as e:
+            self.failed_requests += 1
+            logger.logger.error(f"Unexpected error in API request: {str(e)}")
+            return None
+    
+    def get_with_cache(self, endpoint: str, params: Dict = None) -> Optional[Any]:
+        """Get data from API with caching"""
+        if params is None:
+            params = {}
+        
+        cache_key = self._get_cache_key(endpoint, params)
+        
+        # Try to get from cache first
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data is not None:
+            return cached_data
+        
+        # Not in cache, make API request
+        retry_count = 0
+        while retry_count < self.max_retries:
+            data = self._make_request(endpoint, params)
+            if data is not None:
+                self._add_to_cache(cache_key, data)
+                return data
+            
+            retry_count += 1
+            if retry_count < self.max_retries:
+                logger.logger.warning(f"Retrying API request ({retry_count}/{self.max_retries})")
+                time.sleep(self.retry_delay * retry_count)
+        
+        logger.logger.error(f"Failed to get data after {self.max_retries} retries")
+        return None
+    
+    def get_market_data(self, params: Dict = None) -> Optional[List[Dict[str, Any]]]:
+        """
+        Get cryptocurrency market data from CoinGecko
+        
+        Args:
+            params: Query parameters for the API
+            
+        Returns:
+            List of market data entries
+        """
+        endpoint = "coins/markets"
+        
+        # Set default params for all tracked tokens
+        if params is None:
+            params = {
+                "vs_currency": "usd",
+                "ids": "bitcoin,ethereum,kaito,solana,avalanche-2,polkadot,ripple,binancecoin,uniswap,near,aave,polygon-pos,filecoin",
+                "order": "market_cap_desc",
+                "per_page": 100,
+                "page": 1,
+                "sparkline": True,
+                "price_change_percentage": "1h,24h,7d"
+            }
+        
+        return self.get_with_cache(endpoint, params)
+    
+    def get_market_data_batched(self, token_ids: List[str], batch_size: int = 50) -> Optional[List[Dict[str, Any]]]:
+        """
+        Get market data for many tokens in batches to avoid URL length limitations
+        
+        Args:
+            token_ids: List of CoinGecko token IDs
+            batch_size: Maximum number of tokens per request
+            
+        Returns:
+            Combined list of market data entries
+        """
+        if not token_ids:
+            return []
+        
+        all_data = []
+        for i in range(0, len(token_ids), batch_size):
+            batch = token_ids[i:i+batch_size]
+            batch_ids = ','.join(batch)
+            
+            params = {
+                "vs_currency": "usd",
+                "ids": batch_ids,
+                "order": "market_cap_desc",
+                "per_page": len(batch),
+                "page": 1,
+                "sparkline": True,
+                "price_change_percentage": "1h,24h,7d"
+            }
+            
+            batch_data = self.get_market_data(params)
+            if batch_data:
+                all_data.extend(batch_data)
+            else:
+                logger.logger.error(f"Failed to get data for batch {i//batch_size + 1}")
+        
+        return all_data if all_data else None
+    
+    def get_coin_detail(self, coin_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get detailed data for a specific coin
+        
+        Args:
+            coin_id: CoinGecko coin ID (e.g., 'kaito', 'bitcoin')
+            
+        Returns:
+            Detailed coin data
+        """
+        endpoint = f"coins/{coin_id}"
+        params = {
+            "localization": "false",
+            "tickers": "false",
+            "market_data": "true",
+            "community_data": "false",
+            "developer_data": "false",
+            "sparkline": "true"
         }
+        
+        return self.get_with_cache(endpoint, params)
 
-    def cleanup(self):
-        """Cleanup resources"""
-        if hasattr(self, 'db'):
-            self.db.close()
-
-# Create singleton instance
-config = Config()
+    def get_coin_ohlc(self, coin_id: str, days: int = 1) -> Optional[List[List[float]]]:
+        """
+        Get OHLC data for a specific coin
+        
+        Args:
+            coin_id: CoinGecko coin ID
+            days: Number of days (1, 7, 14, 30, 90, 180, 365)
+            
+        Returns:
+            OHLC data as list of [timestamp, open, high, low, close]
+        """
+        # Valid days values: 1, 7, 14, 30, 90, 180, 365
+        if days not in [1, 7, 14, 30, 90, 180, 365]:
+            days = 1
+            
+        endpoint = f"coins/{coin_id}/ohlc"
+        params = {
+            "vs_currency": "usd",
+            "days": days
+        }
+        
+        return self.get_with_cache(endpoint, params)
+    
+    def find_token_id(self, token_symbol: str) -> Optional[str]:
+        """
+        Find the exact CoinGecko ID for a token by symbol
+        
+        Args:
+            token_symbol: Token symbol (e.g., 'BTC', 'ETH')
+            
+        Returns:
+            CoinGecko ID for token or None if not found
+        """
+        # Check in-memory cache first
+        token_symbol_lower = token_symbol.lower()
+        if token_symbol_lower in self.token_id_cache:
+            return self.token_id_cache[token_symbol_lower]
+        
+        endpoint = "coins/list"
+        coins_list = self.get_with_cache(endpoint)
+        
+        if not coins_list:
+            return None
+        
+        # First try exact match on symbol
+        for coin in coins_list:
+            if coin.get('symbol', '').lower() == token_symbol_lower:
+                logger.logger.info(f"Found {token_symbol} with ID: {coin['id']}")
+                # Add to cache
+                self.token_id_cache[token_symbol_lower] = coin['id']
+                return coin['id']
+        
+        # If not found, try partial name match
+        for coin in coins_list:
+            if token_symbol_lower in coin.get('name', '').lower():
+                logger.logger.info(f"Found possible {token_symbol} match with ID: {coin['id']} (name: {coin['name']})")
+                # Add to cache
+                self.token_id_cache[token_symbol_lower] = coin['id']
+                return coin['id']
+        
+        logger.logger.error(f"Could not find {token_symbol} in CoinGecko coin list")
+        return None
+    
+    def get_multiple_tokens_by_symbol(self, symbols: List[str]) -> Dict[str, str]:
+        """
+        Get CoinGecko IDs for multiple token symbols
+        
+        Args:
+            symbols: List of token symbols
+            
+        Returns:
+            Dictionary mapping symbols to CoinGecko IDs
+        """
+        # Filter symbols that are not in cache
+        symbols_to_fetch = [symbol for symbol in symbols if symbol.lower() not in self.token_id_cache]
+        result = {symbol: self.token_id_cache.get(symbol.lower()) for symbol in symbols if symbol.lower() in self.token_id_cache}
+        
+        if not symbols_to_fetch:
+            return result
+        
+        # Fetch coins list once for all missing symbols
+        endpoint = "coins/list"
+        coins_list = self.get_with_cache(endpoint)
+        
+        if not coins_list:
+            return result
+        
+        # Create lookup dictionary from coins list
+        symbol_to_id = {}
+        for coin in coins_list:
+            coin_symbol = coin.get('symbol', '').lower()
+            if coin_symbol and coin_symbol not in symbol_to_id:
+                symbol_to_id[coin_symbol] = coin['id']
+        
+        # Assign found IDs to results and update cache
+        for symbol in symbols_to_fetch:
+            symbol_lower = symbol.lower()
+            if symbol_lower in symbol_to_id:
+                result[symbol] = symbol_to_id[symbol_lower]
+                self.token_id_cache[symbol_lower] = symbol_to_id[symbol_lower]
+                logger.logger.debug(f"Found {symbol} with ID: {symbol_to_id[symbol_lower]}")
+            else:
+                logger.logger.warning(f"Could not find ID for {symbol}")
+                result[symbol] = None
+        
+        return result
+    
+    def get_trending_tokens(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Get trending tokens from CoinGecko
+        
+        Returns:
+            List of trending tokens data
+        """
+        endpoint = "search/trending"
+        result = self.get_with_cache(endpoint)
+        
+        if result and 'coins' in result:
+            return result['coins']
+        return None
+    
+    def check_token_exists(self, token_id: str) -> bool:
+        """
+        Check if a token ID exists in CoinGecko
+        
+        Args:
+            token_id: CoinGecko coin ID to check
+            
+        Returns:
+            True if token exists, False otherwise
+        """
+        endpoint = f"coins/{token_id}"
+        params = {
+            "localization": "false",
+            "tickers": "false",
+            "market_data": "false",
+            "community_data": "false",
+            "developer_data": "false",
+            "sparkline": "false"
+        }
+        
+        try:
+            # Use a direct request with minimal data to check existence
+            url = f"{self.base_url}/{endpoint}"
+            self._enforce_rate_limit()
+            
+            headers = {
+                'User-Agent': self.user_agent,
+                'Accept': 'application/json'
+            }
+            
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            self.last_request_time = time.time()
+            self.daily_requests += 1
+            
+            return response.status_code == 200
+            
+        except Exception as e:
+            logger.logger.error(f"Error checking if {token_id} exists: {str(e)}")
+            return False
+    
+    def get_request_stats(self) -> Dict[str, int]:
+        """
+        Get API request statistics
+        
+        Returns:
+            Dictionary with request stats
+        """
+        self._clean_cache()
+        return {
+            'daily_requests': self.daily_requests,
+            'failed_requests': self.failed_requests,
+            'cache_size': len(self.cache),
+            'token_id_cache_size': len(self.token_id_cache)
+        }
+        
+    def optimize_for_multiple_tokens(self, tokens: List[str]) -> bool:
+        """
+        Optimize handler for a specific list of tokens by pre-caching their IDs
+        
+        Args:
+            tokens: List of token symbols to optimize for
+            
+        Returns:
+            True if optimization was successful, False otherwise
+        """
+        try:
+            # Pre-fetch and cache token IDs
+            token_ids = self.get_multiple_tokens_by_symbol(tokens)
+            
+            # Pre-fetch market data
+            valid_ids = [id for id in token_ids.values() if id]
+            if valid_ids:
+                self.get_market_data_batched(valid_ids)
+                logger.logger.info(f"Pre-cached data for {len(valid_ids)} tokens")
+                return True
+            
+            return False
+        except Exception as e:
+            logger.logger.error(f"Error optimizing for multiple tokens: {str(e)}")
+            return False
