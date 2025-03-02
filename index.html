@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portugal: Crypto Market Intelligence Bot</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/17.0.2/umd/react.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/17.0.2/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/6.26.0/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.1.9/umd/Recharts.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f4f4f4;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+    const { 
+        LineChart, 
+        Line, 
+        XAxis, 
+        YAxis, 
+        CartesianGrid, 
+        Tooltip, 
+        Legend, 
+        ResponsiveContainer 
+    } = Recharts;
+
+    const CryptoAnalysisDashboard = () => {
+        const [data, setData] = React.useState([
+            { name: 'Jan', BTC: 4000, ETH: 2400, SOL: 2400 },
+            { name: 'Feb', BTC: 3000, ETH: 1398, SOL: 2210 },
+            { name: 'Mar', BTC: 2000, ETH: 9800, SOL: 2290 },
+            { name: 'Apr', BTC: 2780, ETH: 3908, SOL: 2000 },
+            { name: 'May', BTC: 1890, ETH: 4800, SOL: 2181 },
+            { name: 'Jun', BTC: 2390, ETH: 3800, SOL: 2500 },
+        ]);
+
+        return (
+            <div className="container mx-auto px-4 py-12">
+                <div className="text-center mb-12">
+                    <h1 className="text-5xl font-bold text-blue-600 mb-4">Portugal 🤖</h1>
+                    <p className="text-xl text-gray-600 max-w-2xl mx-auto">
+                        Advanced Cryptocurrency Market Intelligence Bot
+                    </p>
+                </div>
+
+                <div className="bg-white shadow-lg rounded-lg p-8">
+                    <h2 className="text-2xl font-semibold text-center mb-6">
+                        Cryptocurrency Market Trends
+                    </h2>
+                    
+                    <ResponsiveContainer width="100%" height={400}>
+                        <LineChart data={data}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="name" />
+                            <YAxis />
+                            <Tooltip 
+                                contentStyle={{ backgroundColor: '#f4f4f4', border: '1px solid #ddd' }}
+                                labelStyle={{ fontWeight: 'bold', color: '#333' }}
+                            />
+                            <Legend />
+                            <Line 
+                                type="monotone" 
+                                dataKey="BTC" 
+                                stroke="#F7931A" 
+                                strokeWidth={3}
+                                activeDot={{ r: 8 }}
+                            />
+                            <Line 
+                                type="monotone" 
+                                dataKey="ETH" 
+                                stroke="#627EEA" 
+                                strokeWidth={3}
+                                activeDot={{ r: 8 }}
+                            />
+                            <Line 
+                                type="monotone" 
+                                dataKey="SOL" 
+                                stroke="#9945FF" 
+                                strokeWidth={3}
+                                activeDot={{ r: 8 }}
+                            />
+                        </LineChart>
+                    </ResponsiveContainer>
+                </div>
+
+                <div className="grid md:grid-cols-3 gap-6 mt-12">
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h3 className="text-xl font-semibold mb-4">🤖 Automated Analysis</h3>
+                        <p>Real-time market trend detection and intelligent insights generation.</p>
+                    </div>
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h3 className="text-xl font-semibold mb-4">📊 Advanced Metrics</h3>
+                        <p>Comprehensive mood and sentiment analysis using multi-factor algorithms.</p>
+                    </div>
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h3 className="text-xl font-semibold mb-4">🐦 Social Integration</h3>
+                        <p>Automated tweet generation with market insights and trend analysis.</p>
+                    </div>
+                </div>
+
+                <div className="text-center mt-12">
+                    <a 
+                        href="https://github.com/yourusername/portugal" 
+                        target="_blank" 
+                        className="bg-blue-600 text-white px-8 py-3 rounded-full text-lg hover:bg-blue-700 transition duration-300"
+                    >
+                        View on GitHub
+                    </a>
+                </div>
+            </div>
+        );
+    };
+
+    ReactDOM.render(<CryptoAnalysisDashboard />, document.getElementById('root'));
+    </script>
+</body>
+</html>
